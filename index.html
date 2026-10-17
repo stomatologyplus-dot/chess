@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Шахматы</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #fff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 10px 0;
+        }
+        h1 { margin-bottom: 3px; font-size: 18px; }
+        #timers {
+            display: flex;
+            justify-content: space-between;
+            width: 85vw;
+            max-width: 360px;
+            font-size: 13px;
+            color: #f1c40f;
+            margin-bottom: 4px;
+        }
+        #status { margin-bottom: 5px; font-size: 13px; color: #aaa; text-align: center; }
+        .captured-panel {
+            font-size: 16px;
+            margin-bottom: 4px;
+            min-height: 20px;
+            letter-spacing: 2px;
+        }
+        #board {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            width: 85vw;
+            height: 85vw;
+            max-width: 360px;
+            max-height: 360px;
+            border: 4px solid #333;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+            position: relative;
+        }
+        .cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+            user-select: none;
+            cursor: pointer;
+            line-height: 1;
+            position: relative;
+        }
+        .white-cell { background-color: #deb887; }
+        .black-cell { background-color: #8b4513; }
+        
+        .piece-white { color: #ffffff; text-shadow: 0 1px 3px rgba(0,0,0,0.9); z-index: 2; }
+        .piece-black { color: #111111; text-shadow: 0 1px 2px rgba(255,255,255,0.3); z-index: 2; }
+        
+        .selected { background-color: #7fffd4 !important; }
+        
+        .highlight::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background-color: rgba(0, 0, 0, 0.25);
+            border-radius: 50%;
+            z-index: 1;
+        }
+        .highlight-capture { box-shadow: inset 0 0 0 4px rgba(200, 0, 0, 0.6); }
+        .btn-container { display: flex; gap: 10px; margin-top: 12px; }
+        .game-btn {
+            padding: 8px 16px;
+            background-color: #444;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .game-btn:active { background-color: #666; }
+
+        /* Окно выбора фигуры для превращения */
+        #promo-modal {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+        .promo-content {
+            background: #222;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            gap: 15px;
+            border: 2px solid #555;
+        }
+        .promo-piece {
+            font-size: 40px;
+            cursor: pointer;
+            background: #333;
+            padding: 10px;
+            border-radius: 6px;
+        }
+        .promo-piece:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+    <h1>Шахматы 2D</h1>
+    <div id="timers">
+        <span id="timer-black">Черные: 10:00</span>
+        <span id="timer-white">Белые: 10:00</span>
+    </div>
+    <div id="captured-black" class="captured-panel"></div>
+    <div id="status">Ход: Белые</div>
+    <div id="board">
+        <!-- Модальное окно выбора -->
+        <div id="promo-modal">
+            <div class="promo-content" id="promo-choices"></div>
+        </div>
+    </div>
+    <div id="captured-white" class="captured-panel"></div>
+    
+    <div class="btn-container">
+        <button class="game-btn" onclick="undoMove()">Назад</button>
+        <button class="game-btn" onclick="resetGame()">Новая игра</button>
+    </div>
+
+    <script>
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.frequency.setValueAtTime(type === 'capture' ? 600 : 400, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.12);
+        }
+
+        const boardEl = document.getElementById('board');
+        const statusEl = document.getElementById('status');
+        const capturedWhiteEl = document.getElementById('captured-white');
+        const capturedBlackEl = document.getElementById('captured-black');
+        const timerWhiteEl = document.getElementById('timer-white');
+        const timerBlackEl = document.getElementById('timer-black');
+        const promoModal = document.getElementById('promo-modal');
+        const promoChoices = document.getElementById('promo-choices');
+        
+        let board = [], selected = null, turn = 'white', validMoves = [];
+        let capturedWhite = [], capturedBlack = [], gameOver = false, inCheck = false, history = [];
+        let whiteTime = 600, blackTime = 600, timerInterval = null;
+        let pendingPromotion = null;
+
+        function startTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if (gameOver || promoModal.style.display === 'flex') return;
+                if (turn === 'white') {
+                    if (whiteTime > 0) whiteTime--;
+                    else { gameOver = true; statusEl.textContent = "Время вышло! Черные победили"; }
+                } else {
+                    if (blackTime > 0) blackTime--;
+                    else { gameOver = true; statusEl.textContent = "Время вышло! Белые победили"; }
+                }
+                updateTimers();
+            }, 1000);
+        }
+
+        function updateTimers() {
+            let wm = Math.floor(whiteTime / 60), ws = whiteTime % 60;
+            let bm = Math.floor(blackTime / 60), bs = blackTime % 60;
+            timerWhiteEl.textContent = `Белые: ${wm}:${ws < 10 ? '0':''}${ws}`;
+            timerBlackEl.textContent = `Черные: ${bm}:${bs < 10 ? '0':''}${bs}`;
+        }
+
+        function resetGame() {
+            localStorage.removeItem('chess_save');
+            board = [
+                ['♜','♞','♝','♛','♚','♝','♞','♜'],
+                ['♟','♟','♟','♟','♟','♟','♟','♟'],
+                ['','','','','','','',''],
+                ['','','','','','','',''],
+                ['','','','','','','',''],
+                ['','','','','','','',''],
+                ['♙','♙','♙','♙','♙','♙','♙','♙'],
+                ['♖','♘','♗','♕','♔','♗','♘','♖']
+            ];
+            selected = null; turn = 'white'; validMoves = [];
+            capturedWhite = []; capturedBlack = []; gameOver = false; inCheck = false; history = [];
+            whiteTime = 600; blackTime = 600;
+            promoModal.style.display = 'none';
+            startTimer();
+            render();
+        }
+
+        function saveState() {
+            history.push({
+                board: board.map(row => [...row]),
+                turn, capturedWhite: [...capturedWhite], capturedBlack: [...capturedBlack], whiteTime, blackTime
+            });
+        }
+
+        function undoMove() {
+            if (history.length === 0 || promoModal.style.display === 'flex') return;
+            let last = history.pop();
+            board = last.board; turn = last.turn;
+            capturedWhite = last.capturedWhite; capturedBlack = last.capturedBlack;
+            whiteTime = last.whiteTime; blackTime = last.blackTime;
+            selected = null; validMoves = []; gameOver = false;
+            promoModal.style.display = 'none';
+            render();
+            localStorage.setItem('chess_save', JSON.stringify({ board, turn, capturedWhite, capturedBlack, whiteTime, blackTime }));
+        }
+
+        function isWhite(p) { return ['♙','♖','♘','♗','♕','♔'].includes(p); }
+        function isBlack(p) { return ['♟','♜','♞','♝','♛','♚'].includes(p); }
+
+        function getRawMoves(r, c, cb) {
+            let p = cb[r][c], white = isWhite(p), moves = [];
+            let addLines = (rd, cd) => {
+                let nr = r + rd, nc = c + cd;
+                while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                    let t = cb[nr][nc];
+                    if (t === '') moves.push({r: nr, c: nc});
+                    else {
+                        if (white ? isBlack(t) : isWhite(t)) moves.push({r: nr, c: nc});
+                        break;
+                    }
+                    nr += rd; nc += cd;
+                }
+            };
+
+            if (p === '♙' || p === '♟') {
+                let dir = white ? -1 : 1, start = white ? 6 : 1;
+                if (r + dir >= 0 && r + dir < 8 && cb[r + dir][c] === '') {
+                    moves.push({r: r + dir, c});
+                    if (r === start && cb[r + dir * 2][c] === '') moves.push({r: r + dir * 2, c});
+                }
+                for (let dc of [-1, 1]) {
+                    let nr = r + dir, nc = c + dc;
+                    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                        let t = cb[nr][nc];
+                        if (t !== '' && (white ? isBlack(t) : isWhite(t))) moves.push({r: nr, c: nc});
+                    }
+                }
+            } else if (p === '♘' || p === '♞') {
+                for (let [dr, dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+                    let nr = r + dr, nc = c + dc;
+                    if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                        let t = cb[nr][nc];
+                        if (t === '' || (white ? isBlack(t) : isWhite(t))) moves.push({r: nr, c: nc});
+                    }
+                }
+            } else if (p === '♗' || p === '♝' || p === '♕' || p === '♛') {
+                for (let [rd, cd] of [[-1,-1],[-1,1],[1,-1],[1,1]]) addLines(rd, cd);
+            }
+            if (p === '♖' || p === '♜' || p === '♕' || p === '♛') {
+                for (let [rd, cd] of [[-1,0],[1,0],[0,-1],[0,1]]) addLines(rd, cd);
+            }
+            if (p === '♔' || p === '♚') {
+                for (let dr = -1; dr <= 1; dr++) {
+                    for (let dc = -1; dc <= 1; dc++) {
+                        if (dr || dc) {
+                            let nr = r + dr, nc = c + dc;
+                            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+                                let t = cb[nr][nc];
+                                if (t === '' || (white ? isBlack(t) : isWhite(t))) moves.push({r: nr, c: nc});
+                            }
+                        }
+                    }
+                }
+            }
+            return moves;
+        }
+
+        function isKingUnderAttack(isWhiteKing, cb) {
+            let kingChar = isWhiteKing ? '♔' : '♚', kingPos = null;
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if (cb[r][c] === kingChar) kingPos = {r, c};
+                }
+            }
+            if (!kingPos) return false;
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    let p = cb[r][c];
+                    if (p !== '' && (isWhiteKing ? isBlack(p) : isWhite(p))) {
+                        if (getRawMoves(r, c, cb).some(m => m.r === kingPos.r && m.c === kingPos.c)) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function getValidMoves(r, c) {
+            let white = isWhite(board[r][c]);
+            return getRawMoves(r, c, board).filter(m => {
+                let tb = board.map(row => [...row]);
+                tb[m.r][m.c] = tb[r][c];
+                tb[r][c] = '';
+                return !isKingUnderAttack(white, tb);
+            });
+        }
+
+        function render() {
+            boardEl.querySelectorAll('.cell').forEach(e => e.remove());
+            inCheck = isKingUnderAttack(turn === 'white', board);
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    let cell = document.createElement('div');
+                    cell.className = `cell ${(r + c) % 2 === 0 ? 'white-cell' : 'black-cell'}`;
+                    if (selected && selected.r === r && selected.c === c) cell.classList.add('selected');
+                    
+                    let move = validMoves.find(m => m.r === r && m.c === c);
+                    if (move) cell.classList.add(board[r][c] !== '' ? 'highlight-capture' : 'highlight');
+
+                    let p = board[r][c];
+                    if (p !== '') {
+                        let span = document.createElement('span');
+                        span.textContent = p;
+                        span.className = isWhite(p) ? 'piece-white' : 'piece-black';
+                        cell.appendChild(span);
+                    }
+                    cell.addEventListener('click', () => onClick(r, c));
+                    boardEl.appendChild(cell);
+                }
+            }
+            statusEl.textContent = gameOver ? "Игра окончена!" : (inCheck ? "ШАХ!" : `Ход: ${turn === 'white' ? 'Белые' : 'Черные'}`);
+            capturedWhiteEl.textContent = capturedWhite.join(' ');
+            capturedBlackEl.textContent = capturedBlack.join(' ');
+            updateTimers();
+        }
+
+        function promotePawn(pieceSymbol) {
+            board[pendingPromotion.r][pendingPromotion.c] = pieceSymbol;
+            promoModal.style.display = 'none';
+            turn = turn === 'white' ? 'black' : 'white';
+            localStorage.setItem('chess_save', JSON.stringify({ board, turn, capturedWhite, capturedBlack, whiteTime, blackTime }));
+            render();
+        }
+
+        function onClick(r, c) {
+            if (gameOver || promoModal.style.display === 'flex') return;
+            let p = board[r][c];
+            if (selected) {
+                let idx = validMoves.findIndex(m => m.r === r && m.c === c);
+                if (idx !== -1) {
+                    saveState();
+                    let t = board[r][c];
+                    if (t !== '') {
+                        if (isWhite(t)) capturedWhite.push(t); else capturedBlack.push(t);
+                        playSound('capture');
+                    } else { playSound('move'); }
+
+                    let movingPiece = board[selected.r][selected.c];
+                    board[r][c] = movingPiece;
+                    board[selected.r][selected.c] = '';
+                    selected = null; validMoves = [];
+
+                    // Проверка превращения пешки
+                    if ((movingPiece === '♙' && r === 0) || (movingPiece === '♟' && r === 7)) {
+                        pendingPromotion = {r, c};
+                        promoChoices.innerHTML = '';
+                        let choices = isWhite(movingPiece) ? ['♕', '♖', '♗', '♘'] : ['♛', '♜', '♝', '♞'];
+                        choices.forEach(sym => {
+                            let div = document.createElement('div');
+                            div.className = 'promo-piece';
+                            div.textContent = sym;
+                            div.className += isWhite(sym) ? ' piece-white' : ' piece-black';
+                            div.onclick = () => promotePawn(sym);
+                            promoChoices.appendChild(div);
+                        });
+                        promoModal.style.display = 'flex';
+                        return;
+                    }
+
+                    turn = turn === 'white' ? 'black' : 'white';
+                    localStorage.setItem('chess_save', JSON.stringify({ board, turn, capturedWhite, capturedBlack, whiteTime, blackTime }));
+                } else if (selected.r === r && selected.c === c) {
+                    selected = null; validMoves = [];
+                } else if ((turn === 'white' && isWhite(p)) || (turn === 'black' && isBlack(p))) {
+                    selected = {r, c}; validMoves = getValidMoves(r, c);
+                }
+            } else if (p !== '' && ((turn === 'white' && isWhite(p)) || (turn === 'black' && isBlack(p)))) {
+                selected = {r, c}; validMoves = getValidMoves(r, c);
+            }
+            render();
+        }
+
+        let saved = localStorage.getItem('chess_save');
+        if (saved) {
+            try {
+                let d = JSON.parse(saved);
+                board = d.board; turn = d.turn; capturedWhite = d.capturedWhite; capturedBlack = d.capturedBlack; whiteTime = d.whiteTime; blackTime = d.blackTime;
+                startTimer(); render();
+            } catch(e) { resetGame(); }
+        } else { resetGame(); }
+      document.addEventListener('deviceready', async () => {
+    if (window.Capacitor && window.Capacitor.Plugins.AdMob) {
+        const { AdMob } = window.Capacitor.Plugins;
+        try {
+            await AdMob.initialize();
+            await AdMob.showBanner({
+                adId: 'ca-app-pub-6182705892783636/4330895071',
+                position: 'BOTTOM_CENTER',
+                size: 'BANNER',
+                margin: 0
+            });
+        } catch (e) {
+            console.log('AdMob error:', e);
+        }
+    }
+});
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "appId": "com.titantus.chess",
+  "appName": "Chess",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "plugins": {
+    "AdMob": {
+      "appId": "ca-app-pub-6182705892783636~5835548433"
+    }
+  }
+}
